@@ -130,23 +130,35 @@ class TwoGisParser:
             self.driver = None
 
     def _close_popups(self):
-        """Close any popups that might block interaction."""
+        """Hide popups via JavaScript instead of clicking (clicking causes redirect)."""
         try:
-            # Close "Выберите где продолжить" popup - click "Остаться"
-            stay_buttons = self.driver.find_elements(By.XPATH,
-                "//button[contains(text(), 'Остаться')] | //span[contains(text(), 'Остаться')]/parent::button")
-            for btn in stay_buttons:
-                try:
-                    # Use JavaScript click to avoid interception
-                    self.driver.execute_script("arguments[0].click();", btn)
-                    logger.debug("Closed 'Stay' popup via JS")
-                    time.sleep(0.3)
-                    return  # Only close one popup
-                except Exception as e:
-                    logger.debug(f"Failed to close popup: {e}")
-                    pass
-        except:
-            pass
+            # Hide popup overlay via JavaScript - DON'T click buttons!
+            self.driver.execute_script("""
+                // Hide all modal/popup overlays
+                var popups = document.querySelectorAll('[class*="modal"], [class*="popup"], [class*="overlay"], [class*="_1frb1ci"]');
+                popups.forEach(function(el) {
+                    el.style.display = 'none';
+                });
+
+                // Also try to remove fixed position elements that might be popups
+                var fixed = document.querySelectorAll('div[style*="fixed"]');
+                fixed.forEach(function(el) {
+                    if (el.innerText && el.innerText.includes('Остаться')) {
+                        el.style.display = 'none';
+                    }
+                });
+
+                // Remove any element containing "Выберите где продолжить"
+                var allDivs = document.querySelectorAll('div');
+                allDivs.forEach(function(el) {
+                    if (el.innerText && el.innerText.includes('Выберите где продолжить')) {
+                        el.style.display = 'none';
+                    }
+                });
+            """)
+            logger.debug("Hidden popups via JS")
+        except Exception as e:
+            logger.debug(f"Failed to hide popups: {e}")
 
     def collect_links_with_pagination(self, city: str, query: str, max_items: int = 500) -> List[str]:
         """
@@ -174,20 +186,10 @@ class TwoGisParser:
 
                 logger.info(f"Page {page}: loading...")
                 self.driver.get(url)
-                time.sleep(2)  # Increased wait
+                time.sleep(1.5)
 
-                # Close popups BEFORE waiting for content
+                # Hide popups via JS (don't click - causes redirect!)
                 self._close_popups()
-                time.sleep(0.5)
-
-                # Verify we're on the correct page (popup might have redirected)
-                current_url = self.driver.current_url
-                if page > 1 and f"/page/{page}" not in current_url and f"/page/" not in current_url:
-                    logger.warning(f"Page {page}: URL changed to {current_url}, retrying...")
-                    self.driver.get(url)
-                    time.sleep(2)
-                    self._close_popups()
-                    time.sleep(0.5)
 
                 # Wait for results
                 try:
