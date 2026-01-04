@@ -128,7 +128,7 @@ class TwoGisParser:
     def collect_links_with_scroll(self, city: str, query: str, max_items: int = 500) -> List[str]:
         """
         Collect company links by scrolling inside the results panel.
-        2GIS uses virtual scroll with Intersection Observer - needs special handling.
+        2GIS uses virtual scroll - we need to use mouse-based scrolling.
         """
         self.driver = self._create_driver()
         unique_links: Set[str] = set()
@@ -159,57 +159,10 @@ class TwoGisParser:
             except:
                 pass
 
-            # Find the scrollable results container using JavaScript
-            # This is more reliable than CSS selectors
-            scroll_js = """
-            function findScrollableParent() {
-                // Find all links to firms
-                var links = document.querySelectorAll('a[href*="/firm/"]');
-                if (links.length === 0) return null;
-
-                // Get the first link and traverse up to find scrollable parent
-                var el = links[0];
-                while (el && el !== document.body) {
-                    var style = window.getComputedStyle(el);
-                    var overflowY = style.overflowY;
-
-                    if ((overflowY === 'auto' || overflowY === 'scroll') &&
-                        el.scrollHeight > el.clientHeight + 10) {
-                        return el;
-                    }
-                    el = el.parentElement;
-                }
-
-                // Fallback: find any scrollable div with significant height
-                var divs = document.querySelectorAll('div');
-                for (var i = 0; i < divs.length; i++) {
-                    var div = divs[i];
-                    if (div.scrollHeight > div.clientHeight + 100 &&
-                        div.clientHeight > 300) {
-                        var style = window.getComputedStyle(div);
-                        if (style.overflowY === 'auto' || style.overflowY === 'scroll') {
-                            return div;
-                        }
-                    }
-                }
-                return null;
-            }
-            return findScrollableParent();
-            """
-
-            scroll_container = self.driver.execute_script(scroll_js)
-
-            if scroll_container:
-                container_class = scroll_container.get_attribute("class") or "unknown"
-                logger.info(f"Found scroll container (class: {container_class[:50]}...)")
-            else:
-                logger.warning("No scroll container found, using body scroll")
-
-            # Scroll and collect
+            # Scroll and collect using mouse-based approach
             no_new_count = 0
-            max_no_new = 15  # More attempts
+            max_no_new = 20
             last_count = 0
-            scroll_position = 0
 
             logger.info(f"Starting scroll collection (target: {max_items})...")
 
@@ -221,7 +174,6 @@ class TwoGisParser:
                     try:
                         href = link.get_attribute("href")
                         if href and "/firm/" in href:
-                            # Clean URL - remove query params and hash
                             clean = href.split("?")[0].split("#")[0]
                             if clean not in unique_links:
                                 unique_links.add(clean)
@@ -240,43 +192,48 @@ class TwoGisParser:
                 if current_count >= max_items:
                     break
 
-                # Multiple scroll strategies
+                # Scroll using multiple methods
                 try:
-                    # Strategy 1: Scroll container directly
-                    if scroll_container:
-                        scroll_position += 600
-                        self.driver.execute_script(
-                            f"arguments[0].scrollTop = {scroll_position};",
-                            scroll_container
-                        )
-
-                    # Strategy 2: Scroll last link into view
+                    # Method 1: Click on last link and scroll with mouse
                     if links:
                         last_link = links[-1]
-                        self.driver.execute_script(
-                            "arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});",
-                            last_link
-                        )
+                        # Move to element
+                        ActionChains(self.driver).move_to_element(last_link).perform()
+                        time.sleep(0.2)
 
-                    # Strategy 3: Keyboard scroll
-                    body = self.driver.find_element(By.TAG_NAME, "body")
-                    body.send_keys(Keys.PAGE_DOWN)
+                        # Scroll with mouse wheel using ActionChains
+                        ActionChains(self.driver).scroll_by_amount(0, 500).perform()
 
-                    # Strategy 4: Wheel event simulation
-                    if scroll_container:
-                        self.driver.execute_script("""
-                            var evt = new WheelEvent('wheel', {
-                                deltaY: 500,
-                                bubbles: true
-                            });
-                            arguments[0].dispatchEvent(evt);
-                        """, scroll_container)
+                    # Method 2: JavaScript scroll on the results list
+                    self.driver.execute_script("""
+                        // Find the list container
+                        var items = document.querySelectorAll('a[href*="/firm/"]');
+                        if (items.length > 0) {
+                            var lastItem = items[items.length - 1];
+                            lastItem.scrollIntoView({block: 'end', behavior: 'smooth'});
+
+                            // Also try to scroll parent
+                            var parent = lastItem.parentElement;
+                            for (var i = 0; i < 10; i++) {
+                                if (parent && parent.scrollHeight > parent.clientHeight) {
+                                    parent.scrollTop = parent.scrollHeight;
+                                    break;
+                                }
+                                parent = parent ? parent.parentElement : null;
+                            }
+                        }
+                    """)
+
+                    # Method 3: Keyboard
+                    ActionChains(self.driver).send_keys(Keys.END).perform()
+                    time.sleep(0.3)
+                    ActionChains(self.driver).send_keys(Keys.PAGE_DOWN).perform()
 
                 except Exception as e:
                     logger.debug(f"Scroll error: {e}")
 
-                # Wait for lazy load
-                time.sleep(random.uniform(0.8, 1.5))
+                # Wait for content to load
+                time.sleep(random.uniform(0.8, 1.2))
 
             logger.info(f"Total collected: {len(unique_links)} links")
             return list(unique_links)[:max_items]
@@ -526,7 +483,8 @@ def run_parser(
     niches: List[str],
     max_items_per_niche: int = 500,
     max_workers: int = 3,
-    output_file: str = "companies.xlsx"
+    output_file: str = "companies.xlsx",
+    headless: bool = True
 ) -> List[Dict]:
     """
     Main parser function.
@@ -537,12 +495,13 @@ def run_parser(
         max_items_per_niche: Max items per query
         max_workers: Parallel workers for parsing details
         output_file: Output filename
+        headless: Run browser in headless mode
     """
     all_links = []
 
     logger.info("=" * 50)
     logger.info(f"2GIS Parser - City: {city}, Queries: {niches}")
-    logger.info(f"Max items: {max_items_per_niche}, Workers: {max_workers}")
+    logger.info(f"Max items: {max_items_per_niche}, Workers: {max_workers}, Headless: {headless}")
     logger.info("=" * 50)
 
     # Phase 1: Collect all links
@@ -550,7 +509,7 @@ def run_parser(
 
     for niche in niches:
         logger.info(f"\nSearching: '{niche}'")
-        parser = TwoGisParser(headless=True)
+        parser = TwoGisParser(headless=headless)
         try:
             links = parser.collect_links_with_scroll(city, niche, max_items_per_niche)
             all_links.extend(links)
@@ -647,12 +606,17 @@ def interactive_cli():
     except:
         workers = 3
 
+    # Headless mode
+    headless_input = input("Скрытый режим браузера? (y/N): ").strip().lower()
+    headless = headless_input == 'y'
+
     # Output
     output = input("Файл (companies.xlsx): ").strip() or "companies.xlsx"
 
     print(f"\n{'=' * 50}")
     print(f"Город: {city}")
     print(f"Запросы: {niches}")
+    print(f"Headless: {'Да' if headless else 'Нет (браузер будет виден)'}")
     print(f"Лимит: {max_items}")
     print(f"Потоков: {workers}")
     print(f"Файл: {output}")
@@ -672,7 +636,8 @@ def interactive_cli():
             niches=niches,
             max_items_per_niche=max_items,
             max_workers=workers,
-            output_file=output
+            output_file=output,
+            headless=headless
         )
 
         elapsed = time.time() - start
