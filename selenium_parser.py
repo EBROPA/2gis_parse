@@ -125,117 +125,125 @@ class TwoGisParser:
                 pass
             self.driver = None
 
-    def collect_links_with_scroll(self, city: str, query: str, max_items: int = 500) -> List[str]:
+    def _close_popups(self):
+        """Close any popups that might block interaction."""
+        try:
+            # Close "Выберите где продолжить" popup - click "Остаться"
+            stay_buttons = self.driver.find_elements(By.XPATH,
+                "//button[contains(text(), 'Остаться')] | //span[contains(text(), 'Остаться')]/parent::button")
+            for btn in stay_buttons:
+                try:
+                    btn.click()
+                    logger.info("Closed 'Stay' popup")
+                    time.sleep(0.5)
+                except:
+                    pass
+
+            # Close any other popups with X button
+            close_buttons = self.driver.find_elements(By.CSS_SELECTOR,
+                "button[aria-label='Закрыть'], button[aria-label='Close'], [class*='close']")
+            for btn in close_buttons[:3]:
+                try:
+                    btn.click()
+                    time.sleep(0.3)
+                except:
+                    pass
+        except:
+            pass
+
+    def collect_links_with_pagination(self, city: str, query: str, max_items: int = 500) -> List[str]:
         """
-        Collect company links by scrolling inside the results panel.
-        2GIS uses virtual scroll - we need to use mouse-based scrolling.
+        Collect company links using URL pagination.
+        2GIS uses /page/N format for pagination.
         """
         self.driver = self._create_driver()
         unique_links: Set[str] = set()
 
         try:
-            # Build URL
             encoded_query = quote(query, safe='')
-            url = f"https://2gis.ru/{city}/search/{encoded_query}"
+            page = 1
+            max_pages = (max_items // 12) + 10  # ~12 items per page
+            consecutive_empty = 0
+            max_empty = 3
 
-            logger.info(f"Opening: {url}")
-            self.driver.get(url)
-            time.sleep(4)
+            logger.info(f"Starting pagination collection (target: {max_items})...")
 
-            # Wait for results to load
-            try:
-                WebDriverWait(self.driver, 15).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/firm/']"))
-                )
-            except:
-                logger.warning("No results found or page didn't load")
-                return []
+            while len(unique_links) < max_items and page <= max_pages and consecutive_empty < max_empty:
+                # Build URL with page
+                if page == 1:
+                    url = f"https://2gis.ru/{city}/search/{encoded_query}"
+                else:
+                    url = f"https://2gis.ru/{city}/search/{encoded_query}/page/{page}"
 
-            # Get total count if available
-            try:
-                count_elem = self.driver.find_element(By.XPATH,
-                    "//*[contains(text(), 'найден') or contains(text(), 'Найден')]")
-                logger.info(f"Search result info: {count_elem.text}")
-            except:
-                pass
+                logger.info(f"Page {page}: {url}")
+                self.driver.get(url)
+                time.sleep(2)
 
-            # Scroll and collect using mouse-based approach
-            no_new_count = 0
-            max_no_new = 20
-            last_count = 0
+                # Close popups on first page
+                if page == 1:
+                    self._close_popups()
+                    time.sleep(1)
 
-            logger.info(f"Starting scroll collection (target: {max_items})...")
+                # Wait for results
+                try:
+                    WebDriverWait(self.driver, 10).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/firm/']"))
+                    )
+                except:
+                    logger.info(f"No results on page {page}")
+                    consecutive_empty += 1
+                    page += 1
+                    continue
 
-            while len(unique_links) < max_items and no_new_count < max_no_new:
-                # Collect current visible links
+                # Close popups again (might appear after load)
+                self._close_popups()
+
+                # Collect links from this page
                 links = self.driver.find_elements(By.CSS_SELECTOR, "a[href*='/firm/']")
+                initial_count = len(unique_links)
 
                 for link in links:
                     try:
                         href = link.get_attribute("href")
                         if href and "/firm/" in href:
                             clean = href.split("?")[0].split("#")[0]
-                            if clean not in unique_links:
-                                unique_links.add(clean)
+                            unique_links.add(clean)
                     except:
                         continue
 
-                current_count = len(unique_links)
+                new_count = len(unique_links)
+                added = new_count - initial_count
 
-                if current_count > last_count:
-                    logger.info(f"Collected: {current_count} links (+{current_count - last_count})")
-                    last_count = current_count
-                    no_new_count = 0
+                if added > 0:
+                    logger.info(f"Page {page}: +{added} links (total: {new_count})")
+                    consecutive_empty = 0
                 else:
-                    no_new_count += 1
+                    consecutive_empty += 1
+                    logger.info(f"Page {page}: no new links")
 
-                if current_count >= max_items:
+                # Check if we've reached max
+                if new_count >= max_items:
                     break
 
-                # Scroll using multiple methods
+                # Check if there's a next page
                 try:
-                    # Method 1: Click on last link and scroll with mouse
-                    if links:
-                        last_link = links[-1]
-                        # Move to element
-                        ActionChains(self.driver).move_to_element(last_link).perform()
-                        time.sleep(0.2)
+                    next_page = self.driver.find_elements(By.CSS_SELECTOR,
+                        f"a[href*='/page/{page + 1}']")
+                    if not next_page:
+                        # Also check pagination numbers
+                        pagination = self.driver.find_elements(By.XPATH,
+                            f"//a[contains(@href, '/page/') and text()='{page + 1}']")
+                        if not pagination:
+                            logger.info("No more pages available")
+                            break
+                except:
+                    pass
 
-                        # Scroll with mouse wheel using ActionChains
-                        ActionChains(self.driver).scroll_by_amount(0, 500).perform()
+                page += 1
+                # Random delay between pages
+                time.sleep(random.uniform(1.0, 2.0))
 
-                    # Method 2: JavaScript scroll on the results list
-                    self.driver.execute_script("""
-                        // Find the list container
-                        var items = document.querySelectorAll('a[href*="/firm/"]');
-                        if (items.length > 0) {
-                            var lastItem = items[items.length - 1];
-                            lastItem.scrollIntoView({block: 'end', behavior: 'smooth'});
-
-                            // Also try to scroll parent
-                            var parent = lastItem.parentElement;
-                            for (var i = 0; i < 10; i++) {
-                                if (parent && parent.scrollHeight > parent.clientHeight) {
-                                    parent.scrollTop = parent.scrollHeight;
-                                    break;
-                                }
-                                parent = parent ? parent.parentElement : null;
-                            }
-                        }
-                    """)
-
-                    # Method 3: Keyboard
-                    ActionChains(self.driver).send_keys(Keys.END).perform()
-                    time.sleep(0.3)
-                    ActionChains(self.driver).send_keys(Keys.PAGE_DOWN).perform()
-
-                except Exception as e:
-                    logger.debug(f"Scroll error: {e}")
-
-                # Wait for content to load
-                time.sleep(random.uniform(0.8, 1.2))
-
-            logger.info(f"Total collected: {len(unique_links)} links")
+            logger.info(f"Total collected: {len(unique_links)} links from {page} pages")
             return list(unique_links)[:max_items]
 
         except Exception as e:
@@ -511,7 +519,7 @@ def run_parser(
         logger.info(f"\nSearching: '{niche}'")
         parser = TwoGisParser(headless=headless)
         try:
-            links = parser.collect_links_with_scroll(city, niche, max_items_per_niche)
+            links = parser.collect_links_with_pagination(city, niche, max_items_per_niche)
             all_links.extend(links)
             logger.info(f"Found {len(links)} links for '{niche}'")
         finally:
