@@ -162,9 +162,9 @@ class TwoGisParser:
         try:
             encoded_query = quote(query, safe='')
             page = 1
-            max_pages = (max_items // 12) + 10  # ~12 items per page
+            max_pages = (max_items // 12) + 50  # ~12 items per page + buffer
             consecutive_empty = 0
-            max_empty = 3
+            max_empty = 5  # More tolerance
 
             logger.info(f"Starting pagination collection (target: {max_items})...")
 
@@ -175,28 +175,33 @@ class TwoGisParser:
                 else:
                     url = f"https://2gis.ru/{city}/search/{encoded_query}/page/{page}"
 
-                logger.info(f"Page {page}: {url}")
+                logger.info(f"Page {page}: loading...")
                 self.driver.get(url)
-                time.sleep(2)
+                time.sleep(1.5)
 
-                # Close popups on first page
-                if page == 1:
-                    self._close_popups()
-                    time.sleep(1)
+                # Close popups
+                self._close_popups()
 
                 # Wait for results
                 try:
-                    WebDriverWait(self.driver, 10).until(
+                    WebDriverWait(self.driver, 8).until(
                         EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/firm/']"))
                     )
                 except:
-                    logger.info(f"No results on page {page}")
+                    # Check if page says "nothing found" or similar
+                    try:
+                        no_results = self.driver.find_elements(By.XPATH,
+                            "//*[contains(text(), 'ничего не найдено') or contains(text(), 'Ничего не нашлось') or contains(text(), 'страница не существует')]")
+                        if no_results:
+                            logger.info(f"Page {page}: end of results")
+                            break
+                    except:
+                        pass
+
+                    logger.info(f"Page {page}: no results found")
                     consecutive_empty += 1
                     page += 1
                     continue
-
-                # Close popups again (might appear after load)
-                self._close_popups()
 
                 # Collect links from this page
                 links = self.driver.find_elements(By.CSS_SELECTOR, "a[href*='/firm/']")
@@ -219,29 +224,15 @@ class TwoGisParser:
                     consecutive_empty = 0
                 else:
                     consecutive_empty += 1
-                    logger.info(f"Page {page}: no new links")
+                    logger.info(f"Page {page}: no new links (empty: {consecutive_empty}/{max_empty})")
 
                 # Check if we've reached max
                 if new_count >= max_items:
                     break
 
-                # Check if there's a next page
-                try:
-                    next_page = self.driver.find_elements(By.CSS_SELECTOR,
-                        f"a[href*='/page/{page + 1}']")
-                    if not next_page:
-                        # Also check pagination numbers
-                        pagination = self.driver.find_elements(By.XPATH,
-                            f"//a[contains(@href, '/page/') and text()='{page + 1}']")
-                        if not pagination:
-                            logger.info("No more pages available")
-                            break
-                except:
-                    pass
-
                 page += 1
                 # Random delay between pages
-                time.sleep(random.uniform(1.0, 2.0))
+                time.sleep(random.uniform(0.8, 1.5))
 
             logger.info(f"Total collected: {len(unique_links)} links from {page} pages")
             return list(unique_links)[:max_items]
@@ -361,44 +352,91 @@ class TwoGisParser:
         return None
 
     def _extract_websites(self) -> List[str]:
-        """Extract website URLs."""
-        ignored = [
-            "2gis.", "google.", "yandex.", "vk.com", "t.me",
-            "instagram.com", "facebook.com", "twitter.com", "ok.ru",
-            "youtube.com", "whatsapp.com", "wa.me", "apple.com",
-            "play.google.com", "apps.apple.com", "booking.com",
+        """Extract real company website URLs, filtering out app links and social media."""
+        # Domains to ignore (apps, social media, aggregators, etc.)
+        ignored_domains = [
+            "2gis.", "google.", "yandex.", "vk.com", "t.me", "telegram.",
+            "instagram.com", "facebook.com", "twitter.com", "ok.ru", "tiktok.com",
+            "youtube.com", "whatsapp.com", "wa.me", "apple.com", "itunes.apple.com",
+            "play.google.com", "apps.apple.com", "booking.com", "tripadvisor.",
+            "onelink.me", "drivee.", "otello.", "zoon.ru", "yell.ru",
+            "delivery-club", "eda.yandex", "dostavista.", "gettaxi.", "uber.com",
+            "city-mobil", "rutaxi.", "taxsee.", "app.adjust.", "adjust.com",
+            "bit.ly", "goo.gl", "clck.ru", "redirect.", "click.", "track.",
+            "appmetrica.", "appsflyer.", "branch.io", "firebase.", "onelink.",
+            "mailto:", "tel:", "javascript:", "#"
+        ]
+
+        # Keywords in URL that indicate it's not a company website
+        ignored_url_keywords = [
+            "/app", "/download", "/install", "/redirect", "/click", "/track",
+            "intent://", "market://", "itms-apps://", "source=2gis", "utm_"
         ]
 
         websites = []
+        priority_websites = []
+
         try:
+            # Look for links in contact section first
             links = self.driver.find_elements(By.CSS_SELECTOR, "a[href^='http']")
+
             for link in links:
                 try:
                     href = link.get_attribute("href")
-                    if not href:
+                    if not href or len(href) < 10:
                         continue
 
                     href_lower = href.lower()
-                    if any(d in href_lower for d in ignored):
+
+                    # Skip ignored domains
+                    if any(d in href_lower for d in ignored_domains):
+                        continue
+
+                    # Skip URLs with ignored keywords
+                    if any(kw in href_lower for kw in ignored_url_keywords):
                         continue
 
                     text = link.text.lower().strip()
-                    if any(kw in text for kw in ["скачать", "app", "приложение"]):
+
+                    # Skip if text indicates app/download
+                    if any(kw in text for kw in ["скачать", "download", "app", "приложение", "установить"]):
                         continue
 
-                    # Priority for explicit website links
-                    if text in ["сайт", "website"] or ("." in text and " " not in text):
-                        if href not in websites:
-                            websites.insert(0, href)
-                    elif len(websites) < 3:
-                        if href not in websites:
-                            websites.append(href)
+                    # HIGH PRIORITY: Link text is "сайт" or "website" or looks like a domain
+                    if text in ["сайт", "website", "веб-сайт", "официальный сайт"]:
+                        if href not in priority_websites:
+                            priority_websites.append(href)
+                        continue
+
+                    # HIGH PRIORITY: Link text looks like a domain (e.g., "example.com")
+                    if "." in text and " " not in text and len(text) > 4 and len(text) < 50:
+                        # Verify it looks like a domain
+                        if not any(bad in text for bad in ["2gis", "google", "yandex", "vk.com"]):
+                            if href not in priority_websites:
+                                priority_websites.append(href)
+                            continue
+
+                    # LOW PRIORITY: Other http links (limit to avoid garbage)
+                    if len(websites) < 2 and href not in websites:
+                        websites.append(href)
+
                 except:
                     continue
+
         except:
             pass
 
-        return websites[:3]
+        # Combine: priority first, then others
+        result = priority_websites + websites
+        # Remove duplicates while preserving order
+        seen = set()
+        final = []
+        for url in result:
+            if url not in seen:
+                seen.add(url)
+                final.append(url)
+
+        return final[:2]  # Max 2 websites
 
     def _normalize_phone(self, phone: str) -> str:
         """Normalize phone to +7 format."""
