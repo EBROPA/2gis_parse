@@ -483,7 +483,8 @@ def run_parser(
     niches: List[str],
     max_items_per_niche: int = 500,
     max_workers: int = 3,
-    output_file: str = "companies.xlsx"
+    output_file: str = "companies.xlsx",
+    headless: bool = True
 ) -> List[Dict]:
     """
     Main parser function.
@@ -494,12 +495,13 @@ def run_parser(
         max_items_per_niche: Max items per query
         max_workers: Parallel workers for parsing details
         output_file: Output filename
+        headless: Run browser in headless mode
     """
     all_links = []
 
     logger.info("=" * 50)
     logger.info(f"2GIS Parser - City: {city}, Queries: {niches}")
-    logger.info(f"Max items: {max_items_per_niche}, Workers: {max_workers}")
+    logger.info(f"Max items: {max_items_per_niche}, Workers: {max_workers}, Headless: {headless}")
     logger.info("=" * 50)
 
     # Phase 1: Collect all links
@@ -507,7 +509,7 @@ def run_parser(
 
     for niche in niches:
         logger.info(f"\nSearching: '{niche}'")
-        parser = TwoGisParser(headless=True)
+        parser = TwoGisParser(headless=headless)
         try:
             links = parser.collect_links_with_scroll(city, niche, max_items_per_niche)
             all_links.extend(links)
@@ -604,12 +606,17 @@ def interactive_cli():
     except:
         workers = 3
 
+    # Headless mode
+    headless_input = input("Скрытый режим браузера? (y/N): ").strip().lower()
+    headless = headless_input == 'y'
+
     # Output
     output = input("Файл (companies.xlsx): ").strip() or "companies.xlsx"
 
     print(f"\n{'=' * 50}")
     print(f"Город: {city}")
     print(f"Запросы: {niches}")
+    print(f"Headless: {'Да' if headless else 'Нет (браузер будет виден)'}")
     print(f"Лимит: {max_items}")
     print(f"Потоков: {workers}")
     print(f"Файл: {output}")
@@ -629,7 +636,8 @@ def interactive_cli():
             niches=niches,
             max_items_per_niche=max_items,
             max_workers=workers,
-            output_file=output
+            output_file=output,
+            headless=headless
         )
 
         elapsed = time.time() - start
