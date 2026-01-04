@@ -6,7 +6,7 @@ import re
 import os
 import concurrent.futures
 from typing import List, Dict, Optional, Set, Tuple
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import quote, urlencode
 import requests
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
@@ -28,39 +28,24 @@ logger = logging.getLogger(__name__)
 
 
 class AntiDetection:
-    """Advanced anti-detection and anti-ban measures."""
+    """Anti-detection measures."""
 
-    # Pool of realistic User Agents (updated 2024)
     USER_AGENTS = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
     ]
 
-    RESOLUTIONS = [
-        (1920, 1080), (1366, 768), (1440, 900), (1536, 864),
-        (1280, 720), (1280, 800), (1600, 900), (1680, 1050),
-        (2560, 1440), (1920, 1200)
-    ]
+    RESOLUTIONS = [(1920, 1080), (1440, 900), (1536, 864), (1680, 1050)]
 
-    LANGUAGES = ["ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7", "ru,en;q=0.9", "ru-RU,ru;q=0.9"]
-
-    def __init__(self, proxy_list: List[str] = None):
-        self.proxy_list = proxy_list or []
-        self.current_proxy_index = 0
-        self._lock = threading.Lock()
+    def __init__(self):
         try:
             self.ua = UserAgent()
         except:
             self.ua = None
 
-    def get_random_user_agent(self) -> str:
-        """Returns a random realistic user agent."""
+    def get_user_agent(self) -> str:
         if self.ua:
             try:
                 return self.ua.random
@@ -68,238 +53,40 @@ class AntiDetection:
                 pass
         return random.choice(self.USER_AGENTS)
 
-    def get_random_resolution(self) -> Tuple[int, int]:
+    def get_resolution(self) -> Tuple[int, int]:
         return random.choice(self.RESOLUTIONS)
 
-    def get_random_language(self) -> str:
-        return random.choice(self.LANGUAGES)
-
-    def get_next_proxy(self) -> Optional[str]:
-        """Returns next proxy from the pool (round-robin)."""
-        if not self.proxy_list:
-            return None
-        with self._lock:
-            proxy = self.proxy_list[self.current_proxy_index]
-            self.current_proxy_index = (self.current_proxy_index + 1) % len(self.proxy_list)
-        return proxy
-
     @staticmethod
-    def human_delay(min_sec: float = 0.5, max_sec: float = 2.0):
-        """Random delay simulating human behavior."""
-        time.sleep(random.uniform(min_sec, max_sec))
-
-    @staticmethod
-    def smart_delay(page_num: int, base_min: float = 1.0, base_max: float = 2.5):
-        """Adaptive delay that increases with page number to avoid rate limiting."""
-        # Add extra delay every N pages
-        extra = (page_num // 10) * 0.5
-        delay = random.uniform(base_min + extra, base_max + extra)
-        time.sleep(delay)
+    def delay(min_s: float = 0.5, max_s: float = 1.5):
+        time.sleep(random.uniform(min_s, max_s))
 
 
-class TwoGisAPI:
+class TwoGisParser:
     """
-    Direct API access to 2GIS for faster and more reliable data extraction.
-    Uses the same API endpoints that the website uses internally.
+    2GIS Parser using Selenium with proper virtual scroll handling.
+    2GIS loads results dynamically as you scroll inside the results panel.
     """
 
-    BASE_API_URL = "https://catalog.api.2gis.com/3.0/items"
-    SEARCH_API_URL = "https://catalog.api.2gis.com/3.0/items"
-
-    # API keys found in 2GIS web app (public keys)
-    API_KEYS = [
-        "rurbbn3446",  # Main key
-        "runjvb6743",
-        "rutnpt6224",
-    ]
-
-    def __init__(self, anti_detection: AntiDetection = None):
-        self.anti_detection = anti_detection or AntiDetection()
-        self.session = requests.Session()
-        self._update_session_headers()
-
-    def _update_session_headers(self):
-        """Update session with new random headers."""
-        self.session.headers.update({
-            "User-Agent": self.anti_detection.get_random_user_agent(),
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": self.anti_detection.get_random_language(),
-            "Origin": "https://2gis.ru",
-            "Referer": "https://2gis.ru/",
-        })
-
-    def _get_api_key(self) -> str:
-        return random.choice(self.API_KEYS)
-
-    def get_region_id(self, city: str) -> Optional[int]:
-        """Get region ID for a city."""
-        city_map = {
-            "moscow": 32, "novosibirsk": 1, "saint-petersburg": 2, "spb": 2,
-            "krasnoyarsk": 4, "ekaterinburg": 3, "kazan": 12, "nizhny_novgorod": 7,
-            "samara": 8, "omsk": 5, "chelyabinsk": 6, "rostov-on-don": 9,
-            "ufa": 10, "volgograd": 11, "perm": 13, "voronezh": 14,
-            "krasnodar": 15, "saratov": 16, "tyumen": 17, "tolyatti": 18,
-            "izhevsk": 19, "barnaul": 20, "irkutsk": 21, "ulyanovsk": 22,
-            "khabarovsk": 23, "vladivostok": 24, "yaroslavl": 25, "tomsk": 26,
-            "orenburg": 27, "kemerovo": 28, "ryazan": 29, "naberezhnye_chelny": 30,
-            "penza": 31, "almaty": 33, "astana": 34, "nur-sultan": 34,
-            "minsk": 35, "kiev": 36, "kyiv": 36, "dubai": 37,
-        }
-        city_lower = city.lower().replace(" ", "_").replace("-", "_")
-        return city_map.get(city_lower)
-
-    def search_items(self, city: str, query: str, page: int = 1, page_size: int = 50) -> Dict:
-        """
-        Search for items using 2GIS API.
-        Returns raw API response with items and total count.
-        """
-        region_id = self.get_region_id(city)
-
-        params = {
-            "q": query,
-            "page": page,
-            "page_size": page_size,
-            "key": self._get_api_key(),
-            "fields": "items.point,items.adm_div,items.contact_groups,items.schedule,items.org,items.name_ex,items.external_content",
-            "sort": "relevance",
-            "type": "branch,org",
-        }
-
-        if region_id:
-            params["region_id"] = region_id
-        else:
-            # Try using city name directly
-            params["region_id"] = 32  # Default to Moscow
-            params["q"] = f"{query} {city}"
-
-        try:
-            self._update_session_headers()
-            AntiDetection.human_delay(0.3, 0.8)
-
-            response = self.session.get(
-                self.SEARCH_API_URL,
-                params=params,
-                timeout=15
-            )
-
-            if response.status_code == 200:
-                return response.json()
-            elif response.status_code == 429:
-                logger.warning("API rate limit hit, waiting...")
-                time.sleep(random.uniform(5, 10))
-                return {"result": {"items": [], "total": 0}}
-            else:
-                logger.warning(f"API returned status {response.status_code}")
-                return {"result": {"items": [], "total": 0}}
-
-        except Exception as e:
-            logger.error(f"API request failed: {e}")
-            return {"result": {"items": [], "total": 0}}
-
-    def parse_api_item(self, item: Dict, city: str) -> Dict:
-        """Parse a single item from API response."""
-        data = {
-            "name": item.get("name", ""),
-            "city": city.capitalize(),
-            "country": "Россия",
-            "address": "",
-            "phones": [],
-            "websites": [],
-            "emails": [],
-            "url": f"https://2gis.ru/firm/{item.get('id', '')}"
-        }
-
-        # Address
-        if "address_name" in item:
-            data["address"] = item["address_name"]
-        elif "adm_div" in item:
-            parts = []
-            for div in item.get("adm_div", []):
-                if div.get("type") in ["city", "street"]:
-                    parts.append(div.get("name", ""))
-            if parts:
-                data["address"] = ", ".join(parts)
-
-        # Contacts
-        for group in item.get("contact_groups", []):
-            for contact in group.get("contacts", []):
-                ctype = contact.get("type", "")
-                value = contact.get("value", "")
-
-                if ctype == "phone":
-                    normalized = self._normalize_phone(value)
-                    if normalized and normalized not in data["phones"]:
-                        data["phones"].append(normalized)
-
-                elif ctype == "email":
-                    if value and value not in data["emails"]:
-                        data["emails"].append(value)
-
-                elif ctype == "website":
-                    if value and not self._is_ignored_domain(value):
-                        if value not in data["websites"]:
-                            data["websites"].append(value)
-
-        return data
-
-    def _normalize_phone(self, phone: str) -> str:
-        """Normalize phone to +7 format."""
-        if not phone:
-            return ""
-        digits = re.sub(r'\D', '', phone)
-        if not digits:
-            return ""
-        if len(digits) == 11:
-            if digits.startswith('7') or digits.startswith('8'):
-                return f"+7{digits[1:]}"
-        elif len(digits) == 10:
-            return f"+7{digits}"
-        return f"+{digits}" if not phone.startswith('+') else phone
-
-    def _is_ignored_domain(self, url: str) -> bool:
-        """Check if URL should be ignored."""
-        ignored = [
-            "2gis.", "google.", "yandex.", "vk.com", "t.me",
-            "instagram.com", "facebook.com", "twitter.com", "ok.ru",
-            "youtube.com", "whatsapp.com", "wa.me", "apple.com",
-            "play.google.com", "apps.apple.com", "booking.com",
-            "tripadvisor.", "delivery-club.ru", "eda.yandex",
-            "zoon.ru", "yell.ru", "onelink.me"
-        ]
-        url_lower = url.lower()
-        return any(d in url_lower for d in ignored)
-
-
-class SeleniumParser:
-    """Enhanced Selenium parser with pagination support and anti-ban measures."""
-
-    def __init__(self, headless: bool = True, proxy: str = None, anti_detection: AntiDetection = None):
-        self.anti_detection = anti_detection or AntiDetection()
-        self.proxy = proxy
+    def __init__(self, headless: bool = True):
+        self.anti = AntiDetection()
         self.headless = headless
         self.driver = None
-        self._setup_driver()
 
-    def _setup_driver(self):
-        """Setup Chrome driver with stealth settings."""
+    def _create_driver(self) -> webdriver.Chrome:
+        """Create a new Chrome driver instance."""
         options = Options()
 
-        # User Agent
-        user_agent = self.anti_detection.get_random_user_agent()
-        options.add_argument(f'user-agent={user_agent}')
+        ua = self.anti.get_user_agent()
+        options.add_argument(f'user-agent={ua}')
+        options.add_argument("--lang=ru-RU")
 
-        # Language
-        options.add_argument(f"--lang={self.anti_detection.get_random_language().split(',')[0]}")
+        w, h = self.anti.get_resolution()
+        options.add_argument(f'--window-size={w},{h}')
 
-        # Window size
-        width, height = self.anti_detection.get_random_resolution()
-        options.add_argument(f'--window-size={width},{height}')
-
-        # Headless mode
         if self.headless:
             options.add_argument("--headless=new")
 
-        # Anti-detection flags
+        # Anti-detection
         options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
@@ -307,377 +94,307 @@ class SeleniumParser:
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
         options.add_argument("--log-level=3")
-        options.add_argument("--disable-logging")
 
-        # Disable images for faster loading (optional, can be enabled)
-        # options.add_argument("--blink-settings=imagesEnabled=false")
-
-        # Proxy support
-        if self.proxy:
-            options.add_argument(f'--proxy-server={self.proxy}')
-
-        # Additional stealth
-        options.add_argument("--disable-extensions")
-        options.add_argument("--disable-plugins-discovery")
-        options.add_argument("--disable-infobars")
-
-        # Preferences
         prefs = {
             "profile.default_content_setting_values.notifications": 2,
             "credentials_enable_service": False,
-            "profile.password_manager_enabled": False,
-            "webrtc.ip_handling_policy": "disable_non_proxied_udp",
-            "webrtc.multiple_routes_enabled": False,
-            "webrtc.nonproxied_udp_enabled": False
         }
         options.add_experimental_option("prefs", prefs)
 
-        # Initialize driver
-        try:
-            service = ChromeService(ChromeDriverManager().install())
-            self.driver = webdriver.Chrome(service=service, options=options)
-        except Exception as e:
-            logger.error(f"Failed to initialize driver: {e}")
-            raise
+        service = ChromeService(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=options)
 
-        # Execute stealth scripts
-        self._inject_stealth_scripts()
+        # Stealth JS
+        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": """
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
+            """
+        })
 
-        # Set timeouts
-        self.driver.set_page_load_timeout(30)
-        self.driver.implicitly_wait(5)
+        driver.set_page_load_timeout(30)
+        driver.implicitly_wait(3)
 
-    def _inject_stealth_scripts(self):
-        """Inject JavaScript to mask automation indicators."""
-        stealth_js = """
-            // Remove webdriver flag
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined
-            });
+        return driver
 
-            // Mock plugins
-            Object.defineProperty(navigator, 'plugins', {
-                get: () => [1, 2, 3, 4, 5]
-            });
-
-            // Mock languages
-            Object.defineProperty(navigator, 'languages', {
-                get: () => ['ru-RU', 'ru', 'en-US', 'en']
-            });
-
-            // Mock permissions
-            const originalQuery = window.navigator.permissions.query;
-            window.navigator.permissions.query = (parameters) => (
-                parameters.name === 'notifications' ?
-                    Promise.resolve({ state: Notification.permission }) :
-                    originalQuery(parameters)
-            );
-
-            // Mock chrome runtime
-            window.chrome = {
-                runtime: {}
-            };
-
-            // Override toString for functions
-            const originalToString = Function.prototype.toString;
-            Function.prototype.toString = function() {
-                if (this === navigator.webdriver) {
-                    return 'function webdriver() { [native code] }';
-                }
-                return originalToString.call(this);
-            };
-        """
-        try:
-            self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": stealth_js})
-        except:
-            pass
-
-    def close(self):
-        """Close the driver."""
+    def _close_driver(self):
         if self.driver:
             try:
                 self.driver.quit()
             except:
                 pass
+            self.driver = None
 
-    def get_search_links_with_pagination(self, city: str, query: str, max_items: int = 1000) -> List[str]:
+    def collect_links_with_scroll(self, city: str, query: str, max_items: int = 500) -> List[str]:
         """
-        Collect company links using proper pagination.
-        2GIS uses page parameter in URL: /search/query?page=N
+        Collect company links by scrolling inside the results panel.
+        2GIS uses virtual scroll - results load as you scroll down.
         """
+        self.driver = self._create_driver()
         unique_links: Set[str] = set()
-        page = 1
-        max_pages = (max_items // 12) + 5  # ~12 items per page + buffer
-        consecutive_empty = 0
-        max_consecutive_empty = 3
 
-        logger.info(f"Collecting links for '{query}' in '{city}' (max: {max_items})...")
+        try:
+            # Build URL
+            encoded_query = quote(query, safe='')
+            url = f"https://2gis.ru/{city}/search/{encoded_query}"
 
-        while len(unique_links) < max_items and page <= max_pages:
+            logger.info(f"Opening: {url}")
+            self.driver.get(url)
+            time.sleep(3)
+
+            # Wait for results to load
             try:
-                # Build URL with page parameter
-                encoded_query = quote(query, safe='')
-                if page == 1:
-                    url = f"https://2gis.ru/{city}/search/{encoded_query}"
-                else:
-                    url = f"https://2gis.ru/{city}/search/{encoded_query}?page={page}"
+                WebDriverWait(self.driver, 15).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/firm/']"))
+                )
+            except:
+                logger.warning("No results found or page didn't load")
+                return []
 
-                self.driver.get(url)
+            # Find the scrollable results container
+            # 2GIS has a specific container for search results
+            scroll_container = None
+            container_selectors = [
+                "div[class*='_1kf6gff']",  # Main results container
+                "div[class*='_awwp2b']",
+                "div[class*='_1lkto3a6']",
+                "div[data-name='SearchResult']",
+                "div[class*='scroll']",
+            ]
 
-                # Smart delay based on page number
-                AntiDetection.smart_delay(page, 1.5, 3.0)
-
-                # Wait for results
+            for selector in container_selectors:
                 try:
-                    WebDriverWait(self.driver, 10).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/firm/']"))
-                    )
+                    containers = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    for container in containers:
+                        # Check if container has scroll
+                        scroll_height = self.driver.execute_script(
+                            "return arguments[0].scrollHeight", container
+                        )
+                        client_height = self.driver.execute_script(
+                            "return arguments[0].clientHeight", container
+                        )
+                        if scroll_height > client_height:
+                            scroll_container = container
+                            logger.info(f"Found scroll container: {selector}")
+                            break
                 except:
-                    # No results on this page
-                    consecutive_empty += 1
-                    if consecutive_empty >= max_consecutive_empty:
-                        logger.info(f"No more results after page {page}")
-                        break
-                    page += 1
                     continue
+                if scroll_container:
+                    break
 
-                # Extract links
+            # Scroll and collect
+            no_new_count = 0
+            max_no_new = 10
+            last_count = 0
+
+            logger.info(f"Starting scroll collection (target: {max_items})...")
+
+            while len(unique_links) < max_items and no_new_count < max_no_new:
+                # Collect current visible links
                 links = self.driver.find_elements(By.CSS_SELECTOR, "a[href*='/firm/']")
-
-                initial_count = len(unique_links)
 
                 for link in links:
                     try:
                         href = link.get_attribute("href")
                         if href and "/firm/" in href:
-                            # Clean URL - remove any query parameters
-                            clean_href = href.split("?")[0]
-                            unique_links.add(clean_href)
+                            # Clean URL
+                            clean = href.split("?")[0].split("#")[0]
+                            if clean not in unique_links:
+                                unique_links.add(clean)
                     except:
                         continue
 
-                new_count = len(unique_links)
-                new_on_page = new_count - initial_count
+                current_count = len(unique_links)
 
-                if new_on_page > 0:
-                    consecutive_empty = 0
-                    logger.info(f"Page {page}: +{new_on_page} new links (total: {new_count})")
+                if current_count > last_count:
+                    logger.info(f"Collected: {current_count} links (+{current_count - last_count})")
+                    last_count = current_count
+                    no_new_count = 0
                 else:
-                    consecutive_empty += 1
-                    if consecutive_empty >= max_consecutive_empty:
-                        logger.info(f"No new links for {consecutive_empty} pages, stopping")
-                        break
+                    no_new_count += 1
 
-                # Check for "end of results" indicators
-                try:
-                    no_results = self.driver.find_elements(By.XPATH,
-                        "//*[contains(text(), 'ничего не найдено') or contains(text(), 'Ничего не нашлось')]")
-                    if no_results:
-                        logger.info("End of results reached")
-                        break
-                except:
-                    pass
-
-                page += 1
-
-            except Exception as e:
-                logger.warning(f"Error on page {page}: {e}")
-                consecutive_empty += 1
-                if consecutive_empty >= max_consecutive_empty:
+                if current_count >= max_items:
                     break
-                page += 1
-                continue
 
-        result = list(unique_links)[:max_items]
-        logger.info(f"Total collected: {len(result)} unique links")
-        return result
+                # Scroll down
+                try:
+                    if scroll_container:
+                        # Scroll inside the container
+                        self.driver.execute_script(
+                            "arguments[0].scrollTop += 800;", scroll_container
+                        )
+                    else:
+                        # Scroll the last visible link into view
+                        if links:
+                            last_link = links[-1]
+                            self.driver.execute_script(
+                                "arguments[0].scrollIntoView({block: 'end'});", last_link
+                            )
+                        # Also try Page Down
+                        ActionChains(self.driver).send_keys(Keys.PAGE_DOWN).perform()
 
-    def parse_company_page(self, url: str, city: str = "") -> Optional[Dict]:
+                except Exception as e:
+                    logger.debug(f"Scroll error: {e}")
+
+                # Random delay
+                time.sleep(random.uniform(0.5, 1.2))
+
+            logger.info(f"Total collected: {len(unique_links)} links")
+            return list(unique_links)[:max_items]
+
+        except Exception as e:
+            logger.error(f"Error collecting links: {e}")
+            return list(unique_links)
+
+        finally:
+            self._close_driver()
+
+    def parse_company(self, url: str, city: str = "") -> Optional[Dict]:
         """Parse a single company page."""
-        max_retries = 3
+        if not self.driver:
+            self.driver = self._create_driver()
 
+        max_retries = 2
         for attempt in range(max_retries):
             try:
                 self.driver.get(url)
-                AntiDetection.human_delay(1.5, 3.0)
+                time.sleep(random.uniform(1.5, 2.5))
 
-                # Wait for page load
-                WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.TAG_NAME, "h1"))
-                )
+                # Wait for name
+                try:
+                    WebDriverWait(self.driver, 8).until(
+                        EC.presence_of_element_located((By.TAG_NAME, "h1"))
+                    )
+                except:
+                    pass
 
-                data = self._extract_company_details(city)
-                data["url"] = url
+                data = {
+                    "name": None,
+                    "city": city.capitalize() if city else "",
+                    "country": "Россия",
+                    "address": None,
+                    "phones": [],
+                    "websites": [],
+                    "emails": [],
+                    "url": url
+                }
+
+                # Name
+                try:
+                    data["name"] = self.driver.find_element(By.TAG_NAME, "h1").text.strip()
+                except:
+                    pass
+
+                # Address
+                try:
+                    for sel in ["a[href*='/geo/']", "[class*='address']"]:
+                        try:
+                            elem = self.driver.find_element(By.CSS_SELECTOR, sel)
+                            text = elem.text.strip()
+                            if text and len(text) > 5:
+                                data["address"] = text
+                                break
+                        except:
+                            continue
+                except:
+                    pass
+
+                # Click "Show phone" if exists
+                try:
+                    btns = self.driver.find_elements(By.XPATH,
+                        "//*[contains(text(), 'Показать') and contains(text(), 'телефон')]"
+                    )
+                    for btn in btns[:2]:
+                        try:
+                            btn.click()
+                            time.sleep(0.3)
+                        except:
+                            pass
+                except:
+                    pass
+
+                # Phones
+                try:
+                    phones = self.driver.find_elements(By.CSS_SELECTOR, "a[href^='tel:']")
+                    for p in phones:
+                        href = p.get_attribute("href")
+                        if href:
+                            raw = href.replace("tel:", "")
+                            norm = self._normalize_phone(raw)
+                            if norm and norm not in data["phones"]:
+                                data["phones"].append(norm)
+                except:
+                    pass
+
+                # Emails
+                try:
+                    emails = self.driver.find_elements(By.CSS_SELECTOR, "a[href^='mailto:']")
+                    for e in emails:
+                        href = e.get_attribute("href")
+                        if href:
+                            email = href.replace("mailto:", "").split("?")[0]
+                            if email and email not in data["emails"]:
+                                data["emails"].append(email)
+                except:
+                    pass
+
+                # Websites
+                try:
+                    data["websites"] = self._extract_websites()
+                except:
+                    pass
+
                 return data
 
             except Exception as e:
                 if attempt < max_retries - 1:
-                    logger.warning(f"Retry {attempt + 1} for {url}: {e}")
-                    time.sleep(random.uniform(2, 4))
+                    logger.warning(f"Retry {attempt + 1} for {url}")
+                    time.sleep(2)
                 else:
                     logger.error(f"Failed to parse {url}: {e}")
                     return None
 
         return None
 
-    def _extract_company_details(self, city: str = "") -> Dict:
-        """Extract company details from current page."""
-        data = {
-            "name": None,
-            "city": city.capitalize() if city else "",
-            "country": "Россия",
-            "address": None,
-            "phones": [],
-            "websites": [],
-            "emails": []
-        }
-
-        # Name
-        try:
-            h1 = self.driver.find_element(By.TAG_NAME, "h1")
-            data["name"] = h1.text.strip()
-        except:
-            pass
-
-        # Address
-        try:
-            addr_selectors = [
-                "a[href*='/geo/']",
-                "[class*='address']",
-                "[data-name='AdditionalInfo'] a",
-            ]
-            for sel in addr_selectors:
-                try:
-                    elem = self.driver.find_element(By.CSS_SELECTOR, sel)
-                    text = elem.text.strip()
-                    if text and len(text) > 5:
-                        data["address"] = text
-                        break
-                except:
-                    continue
-        except:
-            pass
-
-        # Click "Show phone" buttons
-        try:
-            buttons = self.driver.find_elements(By.XPATH,
-                "//*[contains(text(), 'Показать телефон') or contains(text(), 'Show phone') or contains(text(), 'показать')]")
-            for btn in buttons[:3]:  # Limit clicks
-                try:
-                    btn.click()
-                    time.sleep(0.3)
-                except:
-                    pass
-        except:
-            pass
-
-        # Phones
-        try:
-            phones = self.driver.find_elements(By.CSS_SELECTOR, "a[href^='tel:']")
-            for p in phones:
-                try:
-                    href = p.get_attribute("href")
-                    if href:
-                        raw = href.replace("tel:", "")
-                        normalized = self._normalize_phone(raw)
-                        if normalized and normalized not in data["phones"]:
-                            data["phones"].append(normalized)
-                except:
-                    pass
-        except:
-            pass
-
-        # Emails
-        try:
-            emails = self.driver.find_elements(By.CSS_SELECTOR, "a[href^='mailto:']")
-            for e in emails:
-                try:
-                    href = e.get_attribute("href")
-                    if href:
-                        email = href.replace("mailto:", "").split("?")[0]
-                        if email and email not in data["emails"]:
-                            data["emails"].append(email)
-                except:
-                    pass
-        except:
-            pass
-
-        # Websites
-        try:
-            data["websites"] = self._extract_websites()
-        except:
-            pass
-
-        # Fallback: website from email domain
-        if not data["websites"] and data["emails"]:
-            generic = ["gmail.com", "yandex.ru", "mail.ru", "bk.ru", "list.ru",
-                      "inbox.ru", "yahoo.com", "hotmail.com", "outlook.com", "rambler.ru"]
-            for email in data["emails"]:
-                try:
-                    domain = email.split("@")[1]
-                    if domain.lower() not in generic:
-                        data["websites"].append(f"https://{domain}")
-                        break
-                except:
-                    pass
-
-        return data
-
     def _extract_websites(self) -> List[str]:
-        """Extract website URLs from the page."""
-        ignored_domains = [
+        """Extract website URLs."""
+        ignored = [
             "2gis.", "google.", "yandex.", "vk.com", "t.me",
             "instagram.com", "facebook.com", "twitter.com", "ok.ru",
             "youtube.com", "whatsapp.com", "wa.me", "apple.com",
-            "play.google.com", "apps.apple.com", "booking.com", "tripadvisor.",
-            "delivery-club.ru", "eda.yandex", "zoon.ru", "yell.ru"
+            "play.google.com", "apps.apple.com", "booking.com",
         ]
 
         websites = []
-        seen = set()
-
         try:
             links = self.driver.find_elements(By.CSS_SELECTOR, "a[href^='http']")
-
             for link in links:
                 try:
                     href = link.get_attribute("href")
-                    text = link.text.lower().strip()
-
                     if not href:
                         continue
 
                     href_lower = href.lower()
-
-                    # Check blacklist
-                    if any(d in href_lower for d in ignored_domains):
+                    if any(d in href_lower for d in ignored):
                         continue
 
-                    # Skip app links
-                    if any(kw in text for kw in ["скачать", "download", "app", "приложение"]):
+                    text = link.text.lower().strip()
+                    if any(kw in text for kw in ["скачать", "app", "приложение"]):
                         continue
 
-                    # Good indicators
-                    is_likely_website = (
-                        text in ["сайт", "website", "веб-сайт"] or
-                        ("." in text and " " not in text and len(text) > 3)
-                    )
-
-                    if is_likely_website or len(websites) < 5:
-                        if href not in seen:
-                            seen.add(href)
-                            if is_likely_website:
-                                websites.insert(0, href)  # Priority
-                            else:
-                                websites.append(href)
-
+                    # Priority for explicit website links
+                    if text in ["сайт", "website"] or ("." in text and " " not in text):
+                        if href not in websites:
+                            websites.insert(0, href)
+                    elif len(websites) < 3:
+                        if href not in websites:
+                            websites.append(href)
                 except:
                     continue
-
         except:
             pass
 
-        return websites[:5]  # Limit to 5 websites
+        return websites[:3]
 
     def _normalize_phone(self, phone: str) -> str:
         """Normalize phone to +7 format."""
@@ -693,92 +410,30 @@ class SeleniumParser:
             return f"+7{digits}"
         return f"+{digits}" if not phone.startswith('+') else phone
 
-
-class HybridParser:
-    """
-    Hybrid approach: Use API for listing, Selenium for details.
-    This is faster and more reliable than pure Selenium.
-    """
-
-    def __init__(self, anti_detection: AntiDetection = None, use_api: bool = True):
-        self.anti_detection = anti_detection or AntiDetection()
-        self.use_api = use_api
-        self.api = TwoGisAPI(self.anti_detection) if use_api else None
-
-    def collect_items_via_api(self, city: str, query: str, max_items: int = 1000) -> List[Dict]:
-        """Collect items using the API (fast method)."""
-        if not self.api:
-            return []
-
-        items = []
-        page = 1
-        page_size = 50  # Max allowed by API
-        consecutive_empty = 0
-
-        logger.info(f"[API] Collecting '{query}' in '{city}' (max: {max_items})...")
-
-        total_found = None
-
-        while len(items) < max_items:
-            response = self.api.search_items(city, query, page, page_size)
-
-            result = response.get("result", {})
-            page_items = result.get("items", [])
-
-            if total_found is None:
-                total_found = result.get("total", 0)
-                logger.info(f"[API] Total available: {total_found}")
-
-            if not page_items:
-                consecutive_empty += 1
-                if consecutive_empty >= 2:
-                    break
-                page += 1
-                continue
-
-            consecutive_empty = 0
-
-            for item in page_items:
-                if len(items) >= max_items:
-                    break
-                parsed = self.api.parse_api_item(item, city)
-                if parsed and parsed.get("name"):
-                    items.append(parsed)
-
-            logger.info(f"[API] Page {page}: collected {len(items)} items")
-
-            # Check if we've got all available items
-            if len(items) >= total_found:
-                break
-
-            page += 1
-            AntiDetection.human_delay(0.5, 1.5)
-
-        logger.info(f"[API] Total collected: {len(items)} items")
-        return items
-
-    def collect_links_via_selenium(self, city: str, query: str, max_items: int = 1000) -> List[str]:
-        """Fallback: collect links using Selenium with pagination."""
-        parser = SeleniumParser(headless=True, anti_detection=self.anti_detection)
-        try:
-            return parser.get_search_links_with_pagination(city, query, max_items)
-        finally:
-            parser.close()
+    def close(self):
+        self._close_driver()
 
 
-def process_links_chunk(links: List[str], city: str, anti_detection: AntiDetection = None) -> List[Dict]:
-    """Worker function to process a chunk of links."""
+def parse_companies_batch(links: List[str], city: str, worker_id: int = 0) -> List[Dict]:
+    """Parse a batch of company links."""
     results = []
-    proxy = anti_detection.get_next_proxy() if anti_detection else None
-    parser = SeleniumParser(headless=True, proxy=proxy, anti_detection=anti_detection)
+    parser = TwoGisParser(headless=True)
 
     try:
-        for url in links:
-            data = parser.parse_company_page(url, city=city)
-            if data:
-                results.append(data)
-            # Random delay between requests
-            AntiDetection.human_delay(0.5, 1.5)
+        for i, url in enumerate(links):
+            try:
+                data = parser.parse_company(url, city)
+                if data and data.get("name"):
+                    results.append(data)
+
+                # Small delay between pages
+                if i < len(links) - 1:
+                    time.sleep(random.uniform(0.3, 0.8))
+
+            except Exception as e:
+                logger.error(f"[Worker {worker_id}] Error parsing {url}: {e}")
+                continue
+
     finally:
         parser.close()
 
@@ -786,7 +441,7 @@ def process_links_chunk(links: List[str], city: str, anti_detection: AntiDetecti
 
 
 def save_to_excel(data: List[Dict], filename: str = "companies.xlsx"):
-    """Save data to Excel file."""
+    """Save data to Excel."""
     if not data:
         logger.warning("No data to save.")
         return
@@ -801,7 +456,7 @@ def save_to_excel(data: List[Dict], filename: str = "companies.xlsx"):
 
     df = pd.DataFrame(processed)
 
-    column_map = {
+    columns = {
         "name": "Название",
         "city": "Город",
         "country": "Страна",
@@ -811,8 +466,7 @@ def save_to_excel(data: List[Dict], filename: str = "companies.xlsx"):
         "emails": "Email",
         "url": "Ссылка 2ГИС"
     }
-
-    df.rename(columns=column_map, inplace=True)
+    df.rename(columns=columns, inplace=True)
 
     order = ["Название", "Город", "Страна", "Адрес", "Телефоны", "Email", "Сайты", "Ссылка 2ГИС"]
     cols = [c for c in order if c in df.columns]
@@ -822,63 +476,18 @@ def save_to_excel(data: List[Dict], filename: str = "companies.xlsx"):
         df.to_excel(filename, index=False, engine='openpyxl')
         logger.info(f"Saved {len(data)} records to {filename}")
     except Exception as e:
-        logger.error(f"Error saving: {e}")
-        # Fallback to CSV
+        logger.error(f"Excel save error: {e}")
         csv_name = filename.replace('.xlsx', '.csv')
         df.to_csv(csv_name, index=False, encoding='utf-8-sig')
         logger.info(f"Saved as CSV: {csv_name}")
-
-
-def save_incremental(data: List[Dict], filename: str = "companies.xlsx"):
-    """Save data incrementally (append if file exists)."""
-    if not data:
-        return
-
-    processed = []
-    for item in data:
-        p = item.copy()
-        p['phones'] = ", ".join(item.get('phones', [])) if item.get('phones') else ""
-        p['emails'] = ", ".join(item.get('emails', [])) if item.get('emails') else ""
-        p['websites'] = ", ".join(item.get('websites', [])) if item.get('websites') else ""
-        processed.append(p)
-
-    new_df = pd.DataFrame(processed)
-
-    column_map = {
-        "name": "Название",
-        "city": "Город",
-        "country": "Страна",
-        "address": "Адрес",
-        "phones": "Телефоны",
-        "websites": "Сайты",
-        "emails": "Email",
-        "url": "Ссылка 2ГИС"
-    }
-    new_df.rename(columns=column_map, inplace=True)
-
-    try:
-        if os.path.exists(filename):
-            existing_df = pd.read_excel(filename)
-            combined = pd.concat([existing_df, new_df], ignore_index=True)
-            # Remove duplicates by URL
-            if "Ссылка 2ГИС" in combined.columns:
-                combined.drop_duplicates(subset=["Ссылка 2ГИС"], keep='first', inplace=True)
-            combined.to_excel(filename, index=False, engine='openpyxl')
-        else:
-            new_df.to_excel(filename, index=False, engine='openpyxl')
-        logger.info(f"Saved/updated {filename}")
-    except Exception as e:
-        logger.error(f"Incremental save error: {e}")
 
 
 def run_parser(
     city: str,
     niches: List[str],
     max_items_per_niche: int = 500,
-    max_workers: int = 4,
-    use_api: bool = True,
-    output_file: str = "companies.xlsx",
-    proxy_list: List[str] = None
+    max_workers: int = 3,
+    output_file: str = "companies.xlsx"
 ) -> List[Dict]:
     """
     Main parser function.
@@ -886,153 +495,137 @@ def run_parser(
     Args:
         city: City name (e.g., 'moscow', 'novosibirsk')
         niches: List of search queries
-        max_items_per_niche: Maximum items to collect per niche
-        max_workers: Number of parallel workers for Selenium
-        use_api: Try API first (faster), fallback to Selenium
-        output_file: Output Excel filename
-        proxy_list: List of proxy servers (optional)
-
-    Returns:
-        List of collected company data
+        max_items_per_niche: Max items per query
+        max_workers: Parallel workers for parsing details
+        output_file: Output filename
     """
-    anti_detection = AntiDetection(proxy_list)
-    hybrid = HybridParser(anti_detection, use_api=use_api)
+    all_links = []
+
+    logger.info("=" * 50)
+    logger.info(f"2GIS Parser - City: {city}, Queries: {niches}")
+    logger.info(f"Max items: {max_items_per_niche}, Workers: {max_workers}")
+    logger.info("=" * 50)
+
+    # Phase 1: Collect all links
+    logger.info("\n--- Phase 1: Collecting Links ---")
+
+    for niche in niches:
+        logger.info(f"\nSearching: '{niche}'")
+        parser = TwoGisParser(headless=True)
+        try:
+            links = parser.collect_links_with_scroll(city, niche, max_items_per_niche)
+            all_links.extend(links)
+            logger.info(f"Found {len(links)} links for '{niche}'")
+        finally:
+            parser.close()
+
+        # Delay between niches
+        if len(niches) > 1:
+            time.sleep(random.uniform(2, 4))
+
+    # Deduplicate
+    unique_links = list(set(all_links))
+    logger.info(f"\nTotal unique links: {len(unique_links)}")
+
+    if not unique_links:
+        logger.warning("No links found!")
+        return []
+
+    # Phase 2: Parse company details
+    logger.info(f"\n--- Phase 2: Parsing {len(unique_links)} Companies ---")
 
     all_results = []
-    all_links_to_parse = []
 
-    logger.info("=" * 50)
-    logger.info(f"Starting parser: city={city}, niches={niches}")
-    logger.info(f"Max items per niche: {max_items_per_niche}, Workers: {max_workers}")
-    logger.info("=" * 50)
+    # Split into chunks for parallel processing
+    chunk_size = max(5, len(unique_links) // max_workers)
+    chunks = [unique_links[i:i + chunk_size] for i in range(0, len(unique_links), chunk_size)]
 
-    # Phase 1: Collect data (API) or links (Selenium)
-    for niche in niches:
-        logger.info(f"\n--- Processing niche: '{niche}' ---")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(parse_companies_batch, chunk, city, idx): idx
+            for idx, chunk in enumerate(chunks)
+        }
 
-        if use_api:
-            # Try API first
-            items = hybrid.collect_items_via_api(city, niche, max_items_per_niche)
-            if items:
-                all_results.extend(items)
-                logger.info(f"[API] Got {len(items)} items for '{niche}'")
-            else:
-                # Fallback to Selenium
-                logger.info(f"[API] Failed, falling back to Selenium...")
-                links = hybrid.collect_links_via_selenium(city, niche, max_items_per_niche)
-                all_links_to_parse.extend(links)
-        else:
-            # Pure Selenium mode
-            links = hybrid.collect_links_via_selenium(city, niche, max_items_per_niche)
-            all_links_to_parse.extend(links)
+        with tqdm(total=len(unique_links), desc="Parsing", unit="company") as pbar:
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    results = future.result()
+                    all_results.extend(results)
+                    pbar.update(len(chunks[futures[future]]))
+                except Exception as e:
+                    logger.error(f"Worker error: {e}")
 
-    # Phase 2: Parse individual pages (if we have links from Selenium)
-    if all_links_to_parse:
-        unique_links = list(set(all_links_to_parse))
-        # Remove links we already have from API
-        existing_urls = {r.get("url") for r in all_results}
-        links_to_parse = [l for l in unique_links if l not in existing_urls]
-
-        if links_to_parse:
-            logger.info(f"\n--- Phase 2: Parsing {len(links_to_parse)} company pages ---")
-
-            # Split into chunks
-            chunk_size = max(5, len(links_to_parse) // max_workers)
-            chunks = [links_to_parse[i:i+chunk_size] for i in range(0, len(links_to_parse), chunk_size)]
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = {
-                    executor.submit(process_links_chunk, chunk, city, anti_detection): chunk
-                    for chunk in chunks
-                }
-
-                with tqdm(total=len(links_to_parse), desc="Parsing pages", unit="page") as pbar:
-                    for future in concurrent.futures.as_completed(futures):
-                        try:
-                            chunk_results = future.result()
-                            all_results.extend(chunk_results)
-                            pbar.update(len(futures[future]))
-                        except Exception as e:
-                            logger.error(f"Worker error: {e}")
-
-    # Deduplicate results
-    seen_urls = set()
-    unique_results = []
+    # Deduplicate by URL
+    seen = set()
+    final = []
     for r in all_results:
         url = r.get("url", "")
-        if url and url not in seen_urls:
-            seen_urls.add(url)
-            unique_results.append(r)
+        if url and url not in seen:
+            seen.add(url)
+            final.append(r)
 
-    # Save results
-    if unique_results:
-        save_to_excel(unique_results, output_file)
+    # Save
+    if final:
+        save_to_excel(final, output_file)
 
     logger.info(f"\n{'=' * 50}")
-    logger.info(f"COMPLETED: {len(unique_results)} unique companies collected")
+    logger.info(f"DONE: {len(final)} companies collected")
     logger.info(f"{'=' * 50}")
 
-    return unique_results
+    return final
 
 
 def interactive_cli():
-    """Interactive command-line interface."""
+    """Interactive CLI."""
     print("\n" + "=" * 50)
-    print("  2GIS Parser v2.0 (with API + Pagination)")
+    print("     2GIS Parser v3.0 (Virtual Scroll)")
     print("=" * 50)
 
     # City
-    city = input("\nГород (например: moscow, novosibirsk): ").strip() or "moscow"
+    city = input("\nГород (moscow/novosibirsk/etc): ").strip() or "moscow"
 
-    # Niches
-    print("\nВведите ниши через запятую (например: стоматология, аптека)")
-    print("Или 'all' для популярных ниш")
-    niches_input = input("Ниши: ").strip()
+    # Queries
+    print("\nВведите запросы через запятую")
+    print("Например: стоматология, аптека, салон красоты")
+    queries = input("Запросы: ").strip()
 
-    if niches_input.lower() == 'all':
-        niches = ["кафе", "ресторан", "аптека", "салон красоты", "стоматология",
-                  "автосервис", "фитнес", "отель", "магазин продуктов"]
-    elif niches_input:
-        niches = [n.strip() for n in niches_input.split(",")]
+    if queries:
+        niches = [q.strip() for q in queries.split(",") if q.strip()]
     else:
         niches = ["кафе"]
 
     # Max items
     try:
-        max_items = int(input("\nМаксимум компаний на нишу (по умолчанию: 500): ").strip() or "500")
+        max_items = int(input("\nМакс. компаний на запрос (100-2000): ").strip() or "200")
+        max_items = min(max(50, max_items), 5000)
     except:
-        max_items = 500
+        max_items = 200
 
     # Workers
     try:
-        workers = int(input("Число параллельных потоков (по умолчанию: 4): ").strip() or "4")
+        workers = int(input("Потоков для парсинга (1-5): ").strip() or "3")
+        workers = min(max(1, workers), 5)
     except:
-        workers = 4
+        workers = 3
 
-    # API mode
-    api_input = input("Использовать быстрый API режим? (Y/n): ").strip().lower()
-    use_api = api_input != 'n'
-
-    # Output file
-    output = input("Имя файла (по умолчанию: companies.xlsx): ").strip() or "companies.xlsx"
+    # Output
+    output = input("Файл (companies.xlsx): ").strip() or "companies.xlsx"
 
     print(f"\n{'=' * 50}")
     print(f"Город: {city}")
-    print(f"Ниши: {niches}")
-    print(f"Лимит: {max_items} на нишу")
+    print(f"Запросы: {niches}")
+    print(f"Лимит: {max_items}")
     print(f"Потоков: {workers}")
-    print(f"API режим: {'Да' if use_api else 'Нет'}")
     print(f"Файл: {output}")
     print(f"{'=' * 50}")
 
-    confirm = input("\nНачать? (Y/n): ").strip().lower()
-    if confirm == 'n':
+    if input("\nНачать? (Y/n): ").strip().lower() == 'n':
         print("Отменено.")
         return
 
-    print("\nЗапуск парсера... (Ctrl+C для остановки)\n")
+    print("\nЗапуск... (Ctrl+C для остановки)\n")
 
-    start_time = time.time()
+    start = time.time()
 
     try:
         results = run_parser(
@@ -1040,12 +633,11 @@ def interactive_cli():
             niches=niches,
             max_items_per_niche=max_items,
             max_workers=workers,
-            use_api=use_api,
             output_file=output
         )
 
-        elapsed = time.time() - start_time
-        print(f"\n✓ Готово! Собрано {len(results)} компаний за {elapsed:.1f} сек.")
+        elapsed = time.time() - start
+        print(f"\n✓ Готово! {len(results)} компаний за {elapsed:.1f} сек.")
 
     except KeyboardInterrupt:
         print("\n\nОстановлено пользователем.")
