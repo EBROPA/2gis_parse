@@ -22,9 +22,13 @@ import pandas as pd
 from tqdm import tqdm
 import threading
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Configure logging - DEBUG to see more details
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+# Suppress noisy loggers
+logging.getLogger('selenium').setLevel(logging.WARNING)
+logging.getLogger('urllib3').setLevel(logging.WARNING)
+logging.getLogger('WDM').setLevel(logging.WARNING)
 
 
 class AntiDetection:
@@ -133,20 +137,13 @@ class TwoGisParser:
                 "//button[contains(text(), 'Остаться')] | //span[contains(text(), 'Остаться')]/parent::button")
             for btn in stay_buttons:
                 try:
-                    btn.click()
-                    logger.info("Closed 'Stay' popup")
-                    time.sleep(0.5)
-                except:
-                    pass
-
-            # Close any other popups with X button
-            close_buttons = self.driver.find_elements(By.CSS_SELECTOR,
-                "button[aria-label='Закрыть'], button[aria-label='Close'], [class*='close']")
-            for btn in close_buttons[:3]:
-                try:
-                    btn.click()
+                    # Use JavaScript click to avoid interception
+                    self.driver.execute_script("arguments[0].click();", btn)
+                    logger.debug("Closed 'Stay' popup via JS")
                     time.sleep(0.3)
-                except:
+                    return  # Only close one popup
+                except Exception as e:
+                    logger.debug(f"Failed to close popup: {e}")
                     pass
         except:
             pass
@@ -177,17 +174,27 @@ class TwoGisParser:
 
                 logger.info(f"Page {page}: loading...")
                 self.driver.get(url)
-                time.sleep(1.5)
+                time.sleep(2)  # Increased wait
 
-                # Close popups
+                # Close popups BEFORE waiting for content
                 self._close_popups()
+                time.sleep(0.5)
+
+                # Verify we're on the correct page (popup might have redirected)
+                current_url = self.driver.current_url
+                if page > 1 and f"/page/{page}" not in current_url and f"/page/" not in current_url:
+                    logger.warning(f"Page {page}: URL changed to {current_url}, retrying...")
+                    self.driver.get(url)
+                    time.sleep(2)
+                    self._close_popups()
+                    time.sleep(0.5)
 
                 # Wait for results
                 try:
                     WebDriverWait(self.driver, 8).until(
                         EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/firm/']"))
                     )
-                except:
+                except Exception as e:
                     # Check if page says "nothing found" or similar
                     try:
                         no_results = self.driver.find_elements(By.XPATH,
@@ -198,7 +205,7 @@ class TwoGisParser:
                     except:
                         pass
 
-                    logger.info(f"Page {page}: no results found")
+                    logger.warning(f"Page {page}: no results found - {e}")
                     consecutive_empty += 1
                     page += 1
                     continue
@@ -206,12 +213,14 @@ class TwoGisParser:
                 # Collect links from this page
                 links = self.driver.find_elements(By.CSS_SELECTOR, "a[href*='/firm/']")
                 initial_count = len(unique_links)
+                page_links = []
 
                 for link in links:
                     try:
                         href = link.get_attribute("href")
                         if href and "/firm/" in href:
                             clean = href.split("?")[0].split("#")[0]
+                            page_links.append(clean)
                             unique_links.add(clean)
                     except:
                         continue
@@ -219,12 +228,19 @@ class TwoGisParser:
                 new_count = len(unique_links)
                 added = new_count - initial_count
 
+                # Debug: show first few links from this page
+                if page_links:
+                    logger.debug(f"Page {page} sample links: {page_links[:2]}")
+
                 if added > 0:
                     logger.info(f"Page {page}: +{added} links (total: {new_count})")
                     consecutive_empty = 0
                 else:
                     consecutive_empty += 1
-                    logger.info(f"Page {page}: no new links (empty: {consecutive_empty}/{max_empty})")
+                    # Show what links we found (for debugging)
+                    logger.warning(f"Page {page}: no new links - found {len(page_links)} links but all duplicates")
+                    if page_links:
+                        logger.debug(f"Duplicate sample: {page_links[0]}")
 
                 # Check if we've reached max
                 if new_count >= max_items:
@@ -239,6 +255,8 @@ class TwoGisParser:
 
         except Exception as e:
             logger.error(f"Error collecting links: {e}")
+            import traceback
+            traceback.print_exc()
             return list(unique_links)
 
         finally:
