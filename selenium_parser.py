@@ -128,7 +128,7 @@ class TwoGisParser:
     def collect_links_with_scroll(self, city: str, query: str, max_items: int = 500) -> List[str]:
         """
         Collect company links by scrolling inside the results panel.
-        2GIS uses virtual scroll - results load as you scroll down.
+        2GIS uses virtual scroll with Intersection Observer - needs special handling.
         """
         self.driver = self._create_driver()
         unique_links: Set[str] = set()
@@ -140,7 +140,7 @@ class TwoGisParser:
 
             logger.info(f"Opening: {url}")
             self.driver.get(url)
-            time.sleep(3)
+            time.sleep(4)
 
             # Wait for results to load
             try:
@@ -151,41 +151,65 @@ class TwoGisParser:
                 logger.warning("No results found or page didn't load")
                 return []
 
-            # Find the scrollable results container
-            # 2GIS has a specific container for search results
-            scroll_container = None
-            container_selectors = [
-                "div[class*='_1kf6gff']",  # Main results container
-                "div[class*='_awwp2b']",
-                "div[class*='_1lkto3a6']",
-                "div[data-name='SearchResult']",
-                "div[class*='scroll']",
-            ]
+            # Get total count if available
+            try:
+                count_elem = self.driver.find_element(By.XPATH,
+                    "//*[contains(text(), 'найден') or contains(text(), 'Найден')]")
+                logger.info(f"Search result info: {count_elem.text}")
+            except:
+                pass
 
-            for selector in container_selectors:
-                try:
-                    containers = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                    for container in containers:
-                        # Check if container has scroll
-                        scroll_height = self.driver.execute_script(
-                            "return arguments[0].scrollHeight", container
-                        )
-                        client_height = self.driver.execute_script(
-                            "return arguments[0].clientHeight", container
-                        )
-                        if scroll_height > client_height:
-                            scroll_container = container
-                            logger.info(f"Found scroll container: {selector}")
-                            break
-                except:
-                    continue
-                if scroll_container:
-                    break
+            # Find the scrollable results container using JavaScript
+            # This is more reliable than CSS selectors
+            scroll_js = """
+            function findScrollableParent() {
+                // Find all links to firms
+                var links = document.querySelectorAll('a[href*="/firm/"]');
+                if (links.length === 0) return null;
+
+                // Get the first link and traverse up to find scrollable parent
+                var el = links[0];
+                while (el && el !== document.body) {
+                    var style = window.getComputedStyle(el);
+                    var overflowY = style.overflowY;
+
+                    if ((overflowY === 'auto' || overflowY === 'scroll') &&
+                        el.scrollHeight > el.clientHeight + 10) {
+                        return el;
+                    }
+                    el = el.parentElement;
+                }
+
+                // Fallback: find any scrollable div with significant height
+                var divs = document.querySelectorAll('div');
+                for (var i = 0; i < divs.length; i++) {
+                    var div = divs[i];
+                    if (div.scrollHeight > div.clientHeight + 100 &&
+                        div.clientHeight > 300) {
+                        var style = window.getComputedStyle(div);
+                        if (style.overflowY === 'auto' || style.overflowY === 'scroll') {
+                            return div;
+                        }
+                    }
+                }
+                return null;
+            }
+            return findScrollableParent();
+            """
+
+            scroll_container = self.driver.execute_script(scroll_js)
+
+            if scroll_container:
+                container_class = scroll_container.get_attribute("class") or "unknown"
+                logger.info(f"Found scroll container (class: {container_class[:50]}...)")
+            else:
+                logger.warning("No scroll container found, using body scroll")
 
             # Scroll and collect
             no_new_count = 0
-            max_no_new = 10
+            max_no_new = 15  # More attempts
             last_count = 0
+            scroll_position = 0
 
             logger.info(f"Starting scroll collection (target: {max_items})...")
 
@@ -197,7 +221,7 @@ class TwoGisParser:
                     try:
                         href = link.get_attribute("href")
                         if href and "/firm/" in href:
-                            # Clean URL
+                            # Clean URL - remove query params and hash
                             clean = href.split("?")[0].split("#")[0]
                             if clean not in unique_links:
                                 unique_links.add(clean)
@@ -216,28 +240,43 @@ class TwoGisParser:
                 if current_count >= max_items:
                     break
 
-                # Scroll down
+                # Multiple scroll strategies
                 try:
+                    # Strategy 1: Scroll container directly
                     if scroll_container:
-                        # Scroll inside the container
+                        scroll_position += 600
                         self.driver.execute_script(
-                            "arguments[0].scrollTop += 800;", scroll_container
+                            f"arguments[0].scrollTop = {scroll_position};",
+                            scroll_container
                         )
-                    else:
-                        # Scroll the last visible link into view
-                        if links:
-                            last_link = links[-1]
-                            self.driver.execute_script(
-                                "arguments[0].scrollIntoView({block: 'end'});", last_link
-                            )
-                        # Also try Page Down
-                        ActionChains(self.driver).send_keys(Keys.PAGE_DOWN).perform()
+
+                    # Strategy 2: Scroll last link into view
+                    if links:
+                        last_link = links[-1]
+                        self.driver.execute_script(
+                            "arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});",
+                            last_link
+                        )
+
+                    # Strategy 3: Keyboard scroll
+                    body = self.driver.find_element(By.TAG_NAME, "body")
+                    body.send_keys(Keys.PAGE_DOWN)
+
+                    # Strategy 4: Wheel event simulation
+                    if scroll_container:
+                        self.driver.execute_script("""
+                            var evt = new WheelEvent('wheel', {
+                                deltaY: 500,
+                                bubbles: true
+                            });
+                            arguments[0].dispatchEvent(evt);
+                        """, scroll_container)
 
                 except Exception as e:
                     logger.debug(f"Scroll error: {e}")
 
-                # Random delay
-                time.sleep(random.uniform(0.5, 1.2))
+                # Wait for lazy load
+                time.sleep(random.uniform(0.8, 1.5))
 
             logger.info(f"Total collected: {len(unique_links)} links")
             return list(unique_links)[:max_items]
