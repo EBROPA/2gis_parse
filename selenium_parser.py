@@ -162,8 +162,7 @@ class TwoGisParser:
 
     def collect_links_with_pagination(self, city: str, query: str, max_items: int = 500) -> List[str]:
         """
-        Collect company links using URL pagination.
-        2GIS uses /page/N format for pagination.
+        Collect company links using direct URL navigation with popup blocking.
         """
         self.driver = self._create_driver()
         unique_links: Set[str] = set()
@@ -171,25 +170,38 @@ class TwoGisParser:
         try:
             encoded_query = quote(query, safe='')
             page = 1
-            max_pages = (max_items // 12) + 50  # ~12 items per page + buffer
+            max_pages = (max_items // 12) + 50
             consecutive_empty = 0
-            max_empty = 5  # More tolerance
+            max_empty = 5
 
             logger.info(f"Starting pagination collection (target: {max_items})...")
 
             while len(unique_links) < max_items and page <= max_pages and consecutive_empty < max_empty:
-                # Build URL with page
+                # Build URL for this page
                 if page == 1:
                     url = f"https://2gis.ru/{city}/search/{encoded_query}"
                 else:
                     url = f"https://2gis.ru/{city}/search/{encoded_query}/page/{page}"
 
-                logger.info(f"Page {page}: loading...")
-                self.driver.get(url)
-                time.sleep(1.5)
+                logger.info(f"Page {page}: loading {url}")
 
-                # Hide popups via JS (don't click - causes redirect!)
-                self._close_popups()
+                # Navigate to page
+                self.driver.get(url)
+                time.sleep(2)
+
+                # AGGRESSIVE popup blocking - run multiple times
+                for _ in range(3):
+                    self._block_popups_aggressive()
+                    time.sleep(0.3)
+
+                # Check if URL changed (redirect detection)
+                current_url = self.driver.current_url
+                if page > 1 and f"/page/{page}" not in current_url and f"/page/" not in current_url:
+                    logger.warning(f"Redirect detected! Expected page {page}, got: {current_url}")
+                    # Try to navigate again
+                    self.driver.get(url)
+                    time.sleep(2)
+                    self._block_popups_aggressive()
 
                 # Wait for results
                 try:
@@ -197,22 +209,12 @@ class TwoGisParser:
                         EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/firm/']"))
                     )
                 except Exception as e:
-                    # Check if page says "nothing found" or similar
-                    try:
-                        no_results = self.driver.find_elements(By.XPATH,
-                            "//*[contains(text(), 'ничего не найдено') or contains(text(), 'Ничего не нашлось') or contains(text(), 'страница не существует')]")
-                        if no_results:
-                            logger.info(f"Page {page}: end of results")
-                            break
-                    except:
-                        pass
-
                     logger.warning(f"Page {page}: no results found - {e}")
                     consecutive_empty += 1
                     page += 1
                     continue
 
-                # Collect links from this page
+                # Collect links from current page
                 links = self.driver.find_elements(By.CSS_SELECTOR, "a[href*='/firm/']")
                 initial_count = len(unique_links)
                 page_links = []
@@ -230,29 +232,20 @@ class TwoGisParser:
                 new_count = len(unique_links)
                 added = new_count - initial_count
 
-                # Debug: show first few links from this page
                 if page_links:
-                    logger.debug(f"Page {page} sample links: {page_links[:2]}")
+                    logger.debug(f"Page {page} sample: {page_links[:2]}")
 
                 if added > 0:
                     logger.info(f"Page {page}: +{added} links (total: {new_count})")
                     consecutive_empty = 0
                 else:
                     consecutive_empty += 1
-                    # Show what links we found (for debugging)
-                    logger.warning(f"Page {page}: no new links - found {len(page_links)} links but all duplicates")
-                    if page_links:
-                        logger.debug(f"Duplicate sample: {page_links[0]}")
-
-                # Check if we've reached max
-                if new_count >= max_items:
-                    break
+                    logger.warning(f"Page {page}: no new links (empty: {consecutive_empty}/{max_empty})")
 
                 page += 1
-                # Random delay between pages
-                time.sleep(random.uniform(0.8, 1.5))
+                time.sleep(random.uniform(0.5, 1.0))
 
-            logger.info(f"Total collected: {len(unique_links)} links from {page} pages")
+            logger.info(f"Total collected: {len(unique_links)} links from {page-1} pages")
             return list(unique_links)[:max_items]
 
         except Exception as e:
@@ -263,6 +256,55 @@ class TwoGisParser:
 
         finally:
             self._close_driver()
+
+    def _block_popups_aggressive(self):
+        """Aggressively block and remove all popups."""
+        try:
+            self.driver.execute_script("""
+                // Remove ALL overlay/modal elements completely from DOM
+                var selectors = [
+                    '[class*="modal"]', '[class*="popup"]', '[class*="overlay"]',
+                    '[class*="Dialog"]', '[class*="dialog"]', '[class*="_1frb"]',
+                    '[role="dialog"]', '[aria-modal="true"]'
+                ];
+
+                selectors.forEach(function(sel) {
+                    document.querySelectorAll(sel).forEach(function(el) {
+                        el.remove();
+                    });
+                });
+
+                // Remove elements containing popup text
+                document.querySelectorAll('div, section').forEach(function(el) {
+                    if (el.innerText && (
+                        el.innerText.includes('Выберите где продолжить') ||
+                        el.innerText.includes('Остаться') ||
+                        el.innerText.includes('Открыть в приложении')
+                    )) {
+                        // Only remove if it's a popup (has fixed/absolute positioning or is an overlay)
+                        var style = window.getComputedStyle(el);
+                        if (style.position === 'fixed' || style.position === 'absolute' ||
+                            style.zIndex > 100 || el.className.includes('modal') ||
+                            el.className.includes('overlay')) {
+                            el.remove();
+                        }
+                    }
+                });
+
+                // Remove any fixed position overlays
+                document.querySelectorAll('div').forEach(function(el) {
+                    var style = window.getComputedStyle(el);
+                    if (style.position === 'fixed' && style.zIndex > 1000) {
+                        el.remove();
+                    }
+                });
+
+                // Restore body scroll if disabled
+                document.body.style.overflow = 'auto';
+                document.documentElement.style.overflow = 'auto';
+            """)
+        except Exception as e:
+            logger.debug(f"Popup blocking error: {e}")
 
     def parse_company(self, url: str, city: str = "") -> Optional[Dict]:
         """Parse a single company page."""
